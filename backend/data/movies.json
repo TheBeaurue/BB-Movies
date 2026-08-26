@@ -1,0 +1,62 @@
+[
+  {
+    "title": "3 Idiots",
+    "year": 2009,
+    "genre": [
+      "Comedy",
+      "Drama"
+    ],
+    "director": "Rajkumar Hirani",
+    "rating": 8.4,
+    "keywords": [
+      "3 idiots",
+      "aamir khan"
+    ]
+  },
+  {
+    "title": "Dangal",
+    "year": 2016,
+    "genre": [
+      "Biography",
+      "Drama",
+      "Sport"
+    ],
+    "director": "Nitesh Tiwari",
+    "rating": 8.3,
+    "keywords": [
+      "dangal",
+      "aamir khan"
+    ]
+  },
+  {
+    "title": "Zindagi Na Milegi Dobara",
+    "year": 2011,
+    "genre": [
+      "Comedy",
+      "Drama"
+    ],
+    "director": "Zoya Akhtar",
+    "rating": 8.2,
+    "keywords": [
+      "znmd",
+      "zindagi na milegi dobara"
+    ]
+  },
+  {
+    "title": "Dilwale Dulhania Le Jayenge",
+    "year": 1995,
+    "genre": [
+      "Romance",
+      "Drama"
+    ],
+    "director": "Aditya Chopra",
+    "rating": 8.0,
+    "keywords": [
+      "ddlj",
+      "shah rukh khan",
+      "srk",
+      "kajol",
+      "romantic"
+    ]
+  }
+]
