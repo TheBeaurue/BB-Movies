@@ -4,15 +4,6 @@ import re
 
 from .db import connect
 
-STOP = {
-    "the", "a", "an", "is", "are", "was", "were",
-    "ki", "ke", "ka", "mein", "me", "par", "aur", "and",
-    "movie", "movies", "film", "films",
-    "batao", "bata", "show", "tell", "about",
-    "wali", "wale", "hai", "hain", "mujhe", "do", "karo",
-    "with", "of", "in", "from", "to", "for",
-}
-
 
 def norm(s):
     return re.sub(r"\s+", " ", (s or "").strip().lower())
@@ -20,7 +11,7 @@ def norm(s):
 
 def extract_year_range(q):
     m = re.search(
-        r"\b(19\d{2}|20\d{2})\s*(?:-|to|se|â€“|–)\s*(19\d{2}|20\d{2})\b",
+        r"\b(19\d{2}|20\d{2})\s*(?:-|to|se|–|â€“)\s*(19\d{2}|20\d{2})\b",
         q,
     )
     if m:
@@ -34,166 +25,199 @@ def extract_year_range(q):
     return None
 
 
-def people(q, c):
+def exact_person(name, c):
+    if not name:
+        return None
+
+    row = c.execute(
+        """
+        SELECT id,name,profession
+        FROM people
+        WHERE lower(name)=lower(?)
+        LIMIT 1
+        """,
+        (str(name).strip(),),
+    ).fetchone()
+
+    return dict(row) if row else None
+
+
+def exact_movie(title, c):
+    if not title:
+        return None
+
+    row = c.execute(
+        """
+        SELECT id,title,year
+        FROM movies
+        WHERE lower(title)=lower(?)
+        LIMIT 1
+        """,
+        (str(title).strip(),),
+    ).fetchone()
+
+    return dict(row) if row else None
+
+
+def exact_genre(name, c):
+    if not name:
+        return None
+
+    row = c.execute(
+        """
+        SELECT id,name
+        FROM genres
+        WHERE lower(name)=lower(?)
+        LIMIT 1
+        """,
+        (str(name).strip(),),
+    ).fetchone()
+
+    return dict(row) if row else None
+
+GENRE_ALIASES = {
+    "romantic": "Romance",
+    "love": "Romance",
+    "love story": "Romance",
+    "romance": "Romance",
+    "funny": "Comedy",
+    "comedy": "Comedy",
+    "scary": "Horror",
+    "horror": "Horror",
+    "action": "Action",
+    "adventure": "Adventure",
+    "animation": "Animation",
+    "biography": "Biography",
+    "crime": "Crime",
+    "documentary": "Documentary",
+    "drama": "Drama",
+    "family": "Family",
+    "fantasy": "Fantasy",
+    "history": "History",
+    "music": "Music",
+    "musical": "Musical",
+    "mystery": "Mystery",
+    "sci-fi": "Sci-Fi",
+    "science fiction": "Sci-Fi",
+    "short": "Short",
+    "sport": "Sport",
+    "sports": "Sport",
+    "thriller": "Thriller",
+    "war": "War",
+    "western": "Western",
+}
+
+
+def normalize_genre(name):
+    if not name:
+        return None
+
+    cleaned = norm(name)
+
+    return GENRE_ALIASES.get(cleaned, name.strip())
+
+def groq_parse(user_query, c):
     """
-    Match people using word boundaries instead of substring matching.
-
-    This prevents:
-        Aamir Khan
-    from accidentally matching:
-        Amir Khan
-    """
-    rows = c.execute(
-        "SELECT id,name,profession FROM people ORDER BY length(name) DESC"
-    ).fetchall()
-
-    result = []
-
-    for r in rows:
-        name = norm(r["name"])
-
-        if not name:
-            continue
-
-        pattern = r"(?<!\w)" + re.escape(name) + r"(?!\w)"
-
-        if re.search(pattern, q):
-            result.append(dict(r))
-
-    return result
-
-
-def genres(q, c):
-    rows = c.execute(
-        "SELECT id,name FROM genres ORDER BY length(name) DESC"
-    ).fetchall()
-
-    result = []
-
-    for r in rows:
-        name = norm(r["name"])
-
-        if not name:
-            continue
-
-        pattern = r"(?<!\w)" + re.escape(name) + r"(?!\w)"
-
-        if re.search(pattern, q):
-            result.append(dict(r))
-
-    return result
-
-
-def movie_lookup(q, c):
-    rows = c.execute(
-        "SELECT id,title,year FROM movies ORDER BY length(title) DESC"
-    ).fetchall()
-
-    for r in rows:
-        title = norm(r["title"])
-
-        if not title:
-            continue
-
-        pattern = r"(?<!\w)" + re.escape(title) + r"(?!\w)"
-
-        if re.search(pattern, q):
-            return dict(r)
-
-    return None
-
-
-def gemini_parse(original_query, c):
-    """
-    Optional Gemini language-understanding layer.
-
-    Gemini does NOT provide movie data.
-    It only converts natural-language input into structured intent.
+    Groq is ONLY the language/intent parser.
+    It does not provide movie data.
     """
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
 
     if not api_key:
         return None
 
     try:
-        from google import genai
+        from groq import Groq
 
-        client = genai.Client(api_key=api_key)
-
-        rows = c.execute(
-            "SELECT name FROM people ORDER BY length(name) DESC"
-        ).fetchall()
-
-        known_people = [r["name"] for r in rows]
-
-        genre_rows = c.execute(
-            "SELECT name FROM genres ORDER BY length(name) DESC"
-        ).fetchall()
-
-        known_genres = [r["name"] for r in genre_rows]
+        client = Groq(api_key=api_key)
 
         prompt = f"""
-You are the query parser for a Bollywood movie database.
+You are BB, a Bollywood database query parser.
 
-Convert the user's query into JSON only.
-
-Do NOT answer the user.
-Do NOT invent database results.
-Only identify the requested intent and entities.
+Convert the user's query into JSON ONLY.
+Never answer the query yourself.
+Never invent movies, people, songs, years or facts.
 
 Allowed intents:
 - person_movies
-- movie_detail
 - collaboration
+- movie_detail
 - songs
 - filtered_movies
+- person_detail
 - unknown
 
-JSON fields:
+Return EXACTLY this structure:
+
 {{
   "intent": "...",
   "people": [],
   "movie": null,
   "genre": null,
   "year_from": null,
-  "year_to": null
+  "year_to": null,
+  "singer": null,
+  "limit": 20
 }}
 
 Rules:
-- Use exact person names from the supplied database list whenever possible.
-- Do not confuse similar names.
-- "Aamir Khan" and "Amir Khan" are different people.
-- If one person is asking for their movies, use person_movies.
-- If two or more people are being asked about together, use collaboration.
-- "ki movies", "ke films", "ki filmein", "movie list", "filmography" can indicate person_movies.
-- A decade such as 1990s means 1990 through 1999.
-- If a movie title is clearly mentioned, use movie_detail when the user asks about that movie.
-- If a genre/year filter is requested, use filtered_movies.
-- If songs/music/gaane are requested, use songs.
-- If uncertain, use unknown.
 
-Known people:
-{known_people[:3000]}
-
-Known genres:
-{known_genres}
+1. Complete person names only.
+2. Never shorten a name.
+3. "Aamir Khan" is NOT "Khan".
+4. "Amir Khan" and "Aamir Khan" are different names.
+5. "Aamir Khan ki movies" -> person_movies.
+6. "Aamir Khan ki 1990s movies" ->
+   person_movies + year_from 1990 + year_to 1999.
+7. "Aamir Khan aur Salman Khan ki movies" ->
+   collaboration + both people.
+8. "Dangal ke director" ->
+   movie_detail + movie Dangal.
+9. "1990s ki romantic movies" ->
+   filtered_movies + genre Romantic + 1990-1999.
+10. "KK ke songs" ->
+    songs + singer KK.
+11. If uncertain, use unknown.
+12. limit should normally be 20.
 
 User query:
-{original_query}
+{user_query}
 """
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0
         )
 
-        text = (response.text or "").strip()
+        text = (
+            response.choices[0].message.content or ""
+        ).strip()
 
-        # Remove Markdown JSON fences if Gemini adds them.
-        text = re.sub(r"^```json\s*", "", text, flags=re.I)
-        text = re.sub(r"^```\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
+        text = re.sub(
+            r"^```json\s*",
+            "",
+            text,
+            flags=re.I
+        )
+
+        text = re.sub(
+            r"^```\s*",
+            "",
+            text
+        )
+
+        text = re.sub(
+            r"\s*```$",
+            "",
+            text
+        )
 
         data = json.loads(text)
 
@@ -202,42 +226,116 @@ User query:
 
         return data
 
-    except Exception:
-        # Gemini is optional. Existing rule-based engine remains fallback.
+    except Exception as e:
+        print("Groq parser error:", e)
         return None
 
 
-def person_movies(p, c, yr=None):
-    if yr:
-        rows = c.execute(
-            """
-            SELECT DISTINCT m.title,m.year,m.rating,mp.role
-            FROM movies m
-            JOIN movie_people mp ON mp.movie_id=m.id
-            WHERE mp.person_id=?
-              AND m.year >= ?
-              AND m.year <= ?
-            ORDER BY m.year DESC
-            """,
-            (p["id"], yr[0], yr[1]),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            """
-            SELECT DISTINCT m.title,m.year,m.rating,mp.role
-            FROM movies m
-            JOIN movie_people mp ON mp.movie_id=m.id
-            WHERE mp.person_id=?
-            ORDER BY m.year DESC
-            """,
-            (p["id"],),
-        ).fetchall()
+def run_database_query(parsed, c):
+    """
+    Converts Gemini's structured query into deterministic SQL.
+    """
 
-    return rows
+    intent = parsed.get("intent")
+    people_names = parsed.get("people") or []
+    movie_name = parsed.get("movie")
+    genre_name = normalize_genre(parsed.get("genre"))
+    singer = parsed.get("singer")
 
+    year_from = parsed.get("year_from")
+    year_to = parsed.get("year_to")
 
-def collaboration(p1, p2, c, yr=None):
-    if yr:
+    try:
+        year_from = int(year_from) if year_from is not None else None
+        year_to = int(year_to) if year_to is not None else None
+    except (TypeError, ValueError):
+        year_from = year_to = None
+
+    try:
+        limit = int(parsed.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+
+    limit = max(1, min(limit, 50))
+
+    # ---------------------------------------------------------
+    # PERSON MOVIES
+    # ---------------------------------------------------------
+
+    if intent == "person_movies" and people_names:
+        person = exact_person(people_names[0], c)
+
+        if not person:
+            return None
+
+        if year_from is not None and year_to is not None:
+            rows = c.execute(
+                """
+                SELECT DISTINCT m.title,m.year,m.rating
+                FROM movies m
+                JOIN movie_people mp ON mp.movie_id=m.id
+                WHERE mp.person_id=?
+                  AND m.year BETWEEN ? AND ?
+                ORDER BY m.year DESC
+                LIMIT ?
+                """,
+                (
+                    person["id"],
+                    year_from,
+                    year_to,
+                    limit,
+                ),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """
+                SELECT DISTINCT m.title,m.year,m.rating
+                FROM movies m
+                JOIN movie_people mp ON mp.movie_id=m.id
+                WHERE mp.person_id=?
+                ORDER BY m.year DESC
+                LIMIT ?
+                """,
+                (person["id"], limit),
+            ).fetchall()
+
+        period = (
+            f" ({year_from}–{year_to})"
+            if year_from is not None and year_to is not None
+            else ""
+        )
+
+        if not rows:
+            return {
+                "intent": "person_filmography",
+                "text": (
+                    f"<strong>🎭 {person['name']}{period}</strong><br>"
+                    "No matching movies found in BB's database."
+                ),
+            }
+
+        return {
+            "intent": "person_filmography",
+            "text": (
+                f"<strong>🎭 {person['name']}{period}</strong><br>"
+                + "<br>".join(
+                    f"• {r['title']} ({r['year']})"
+                    for r in rows
+                )
+            ),
+        }
+
+    # ---------------------------------------------------------
+    # COLLABORATION
+    # ---------------------------------------------------------
+
+    if intent == "collaboration" and len(people_names) >= 2:
+        p1 = exact_person(people_names[0], c)
+        p2 = exact_person(people_names[1], c)
+
+        if not p1 or not p2:
+            return None
+
         rows = c.execute(
             """
             SELECT DISTINCT m.title,m.year,m.rating
@@ -246,59 +344,31 @@ def collaboration(p1, p2, c, yr=None):
             JOIN movie_people mp2 ON mp2.movie_id=m.id
             WHERE mp1.person_id=?
               AND mp2.person_id=?
-              AND m.year >= ?
-              AND m.year <= ?
+              AND (
+                    ? IS NULL
+                    OR m.year BETWEEN ? AND ?
+                  )
             ORDER BY m.year DESC
+            LIMIT ?
             """,
-            (p1["id"], p2["id"], yr[0], yr[1]),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            """
-            SELECT DISTINCT m.title,m.year,m.rating
-            FROM movies m
-            JOIN movie_people mp1 ON mp1.movie_id=m.id
-            JOIN movie_people mp2 ON mp2.movie_id=m.id
-            WHERE mp1.person_id=?
-              AND mp2.person_id=?
-            ORDER BY m.year DESC
-            """,
-            (p1["id"], p2["id"]),
+            (
+                p1["id"],
+                p2["id"],
+                year_from,
+                year_from,
+                year_to,
+                limit,
+            ),
         ).fetchall()
 
-    return rows
+        names = f"{p1['name']} + {p2['name']}"
 
-
-def query_rule_based(q):
-    """
-    Original BB query logic, improved with exact person matching.
-    Used when Gemini is unavailable or cannot parse the query.
-    """
-
-    q = norm(q)
-    c = connect()
-
-    ps = people(q, c)
-    gs = genres(q, c)
-    yr = extract_year_range(q)
-
-    # Two-person collaboration.
-    if len(ps) >= 2:
-        a, b = ps[0], ps[1]
-        rows = collaboration(a, b, c, yr)
-
-        c.close()
-
-        names = f"{a['name']} + {b['name']}"
-
-        if rows:
+        if not rows:
             return {
                 "intent": "collaboration",
                 "text": (
                     f"<strong>🎬 {names}</strong><br>"
-                    + "<br>".join(
-                        f"• {r['title']} ({r['year']})" for r in rows
-                    )
+                    "No matching movie found in BB's current database."
                 ),
             }
 
@@ -306,90 +376,110 @@ def query_rule_based(q):
             "intent": "collaboration",
             "text": (
                 f"<strong>🎬 {names}</strong><br>"
-                "No matching movie found in BB's current database."
+                + "<br>".join(
+                    f"• {r['title']} ({r['year']})"
+                    for r in rows
+                )
             ),
         }
 
-    # Person filmography.
-    if len(ps) == 1 and (
-        any(
-            x in q
-            for x in [
-                "movie",
-                "movies",
-                "film",
-                "films",
-                "kaam",
-                "ki film",
-                "ke film",
-                "filme",
-                "filmography",
-                "career",
-            ]
-        )
-        or yr
-    ):
-        p = ps[0]
-        rows = person_movies(p, c, yr)
+    # ---------------------------------------------------------
+    # MOVIE DETAIL
+    # ---------------------------------------------------------
 
-        c.close()
+    if intent == "movie_detail" and movie_name:
+        movie = exact_movie(movie_name, c)
 
-        period = f" ({yr[0]}–{yr[1]})" if yr else ""
+        if not movie:
+            return None
 
-        if rows:
-            return {
-                "intent": "person_filmography",
-                "text": (
-                    f"<strong>🎭 {p['name']}{period}</strong><br>"
-                    + "<br>".join(
-                        f"• {r['title']} ({r['year']})" for r in rows
-                    )
-                ),
-            }
+        row = c.execute(
+            """
+            SELECT
+                m.title,
+                m.year,
+                m.director,
+                m.rating,
+                m.synopsis,
+                GROUP_CONCAT(g.name, ', ') genres
+            FROM movies m
+            LEFT JOIN movie_genres mg
+                ON mg.movie_id=m.id
+            LEFT JOIN genres g
+                ON g.id=mg.genre_id
+            WHERE m.id=?
+            GROUP BY m.id
+            """,
+            (movie["id"],),
+        ).fetchone()
 
         return {
-            "intent": "person_filmography",
+            "intent": "movie_detail",
             "text": (
-                f"<strong>🎭 {p['name']}{period}</strong><br>"
-                "No filmography found in the current database."
+                f"<strong>🎬 {row['title']}</strong><br>"
+                f"{row['year']} · {row['genres'] or '—'}<br>"
+                f"★ {row['rating']}<br>"
+                f"Director: {row['director'] or '—'}<br>"
+                f"<small>"
+                f"{row['synopsis'] or 'No synopsis available.'}"
+                f"</small>"
             ),
         }
 
-    # Genre + year/range.
-    if gs or yr:
+    # ---------------------------------------------------------
+    # FILTERED MOVIES
+    # ---------------------------------------------------------
+
+    if intent == "filtered_movies":
         clauses = []
         params = []
 
-        if gs:
+        if genre_name:
+            genre = exact_genre(genre_name, c)
+
+            if not genre:
+                return None
+
             clauses.append(
                 """
                 EXISTS (
                     SELECT 1
                     FROM movie_genres mg
-                    JOIN genres g ON g.id=mg.genre_id
                     WHERE mg.movie_id=m.id
-                      AND lower(g.name)=?
+                      AND mg.genre_id=?
                 )
                 """
             )
-            params.append(norm(gs[0]["name"]))
+            params.append(genre["id"])
 
-        if yr:
-            clauses += ["m.year >= ?", "m.year <= ?"]
-            params += [yr[0], yr[1]]
+        if year_from is not None:
+            clauses.append("m.year >= ?")
+            params.append(year_from)
+
+        if year_to is not None:
+            clauses.append("m.year <= ?")
+            params.append(year_to)
+
+        if not clauses:
+            return None
 
         sql = f"""
             SELECT DISTINCT m.title,m.year,m.rating
             FROM movies m
             WHERE {' AND '.join(clauses)}
-            ORDER BY m.rating DESC, m.year DESC
+            ORDER BY m.rating DESC,m.year DESC
+            LIMIT ?
         """
 
-        rows = c.execute(sql, params).fetchall()
-        c.close()
+        params.append(limit)
 
-        label = gs[0]["name"] if gs else "Bollywood"
-        period = f" ({yr[0]}–{yr[1]})" if yr else ""
+        rows = c.execute(sql, params).fetchall()
+
+        label = genre_name or "Bollywood"
+
+        period = ""
+        if year_from is not None and year_to is not None:
+            period = f" ({year_from}–{year_to})"
 
         return {
             "intent": "filtered_movies",
@@ -401,101 +491,72 @@ def query_rule_based(q):
                         for r in rows
                     )
                     if rows
-                    else "No matching movies in the current database."
+                    else "No matching movies in BB's database."
                 )
             ),
         }
 
-    # Song queries.
-    if any(x in q for x in ["song", "songs", "gaana", "gane", "music", "गीत"]):
-        singer = (
-            ps[0]["name"]
-            if ps and norm(ps[0]["profession"]) == "singer"
-            else None
-        )
+    # ---------------------------------------------------------
+    # SONGS
+    # ---------------------------------------------------------
 
+    if intent == "songs":
         if singer:
             rows = c.execute(
                 """
-                SELECT title,year
+                SELECT title,year,music_director,lyricist
                 FROM songs
-                WHERE lower(singer)=?
+                WHERE lower(singer)=lower(?)
                 ORDER BY year DESC
+                LIMIT ?
                 """,
-                (norm(singer),),
+                (singer, limit),
             ).fetchall()
         else:
             rows = c.execute(
                 """
-                SELECT title,movie_id,singer,year
+                SELECT title,year,singer,music_director,lyricist
                 FROM songs
                 ORDER BY year DESC
-                """
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
 
-        c.close()
+        if not rows:
+            return {
+                "intent": "songs",
+                "text": (
+                    "<strong>🎵 Songs</strong><br>"
+                    "No matching songs found in BB's database."
+                ),
+            }
 
         return {
             "intent": "songs",
             "text": (
                 "<strong>🎵 Songs</strong><br>"
-                + (
-                    "<br>".join(
-                        f"• {r['title']} ({r['year']})" for r in rows
+                + "<br>".join(
+                    f"• {r['title']} ({r['year']})"
+                    + (
+                        f" — {r['singer']}"
+                        if r['singer']
+                        else ""
                     )
-                    if rows
-                    else "No matching songs in the current database."
+                    for r in rows
                 )
             ),
         }
 
-    # Direct movie lookup.
-    m = movie_lookup(q, c)
-
-    if m:
-        row = c.execute(
-            """
-            SELECT m.title,m.year,m.director,m.rating,m.synopsis,
-                   GROUP_CONCAT(g.name, ', ') genres
-            FROM movies m
-            LEFT JOIN movie_genres mg ON mg.movie_id=m.id
-            LEFT JOIN genres g ON g.id=mg.genre_id
-            WHERE m.id=?
-            GROUP BY m.id
-            """,
-            (m["id"],),
-        ).fetchone()
-
-        c.close()
-
-        return {
-            "intent": "movie_detail",
-            "text": (
-                f"<strong>🎬 {row['title']}</strong><br>"
-                f"{row['year']} · {row['genres'] or '—'}<br>"
-                f"★ {row['rating']}<br>"
-                f"Director: {row['director']}<br>"
-                f"<small>{row['synopsis'] or 'No synopsis available.'}</small>"
-            ),
-        }
-
-    c.close()
-
-    return {
-        "intent": "fallback",
-        "text": (
-            "Namaste! 🎬 Try a movie name, a person + movies, "
-            "two people together, a genre, a year range, or songs."
-        ),
-    }
+    return None
 
 
 def query(q):
     """
-    Main BB query entry point.
+    Main BB query.
 
-    Gemini first tries to understand natural language.
-    Existing deterministic BB logic remains the safety fallback.
+    Gemini understands the user's language.
+    BB's SQLite database supplies the actual facts.
     """
 
     original_query = (q or "").strip()
@@ -508,106 +569,21 @@ def query(q):
 
     c = connect()
 
-    parsed = gemini_parse(original_query, c)
+    parsed = groq_parse(original_query, c)
 
     if parsed:
-        intent = parsed.get("intent")
-        people_names = parsed.get("people") or []
+        result = run_database_query(parsed, c)
 
-        if not people_names and parsed.get("person"):
-            people_names = [parsed.get("person")]
-
-        year_from = parsed.get("year_from")
-        year_to = parsed.get("year_to")
-
-        yr = None
-
-        try:
-            if year_from is not None and year_to is not None:
-                yr = (int(year_from), int(year_to))
-        except (TypeError, ValueError):
-            yr = None
-
-        # Resolve Gemini's names against the actual database.
-        resolved_people = []
-
-        for name in people_names:
-            if not name:
-                continue
-
-            exact = c.execute(
-                """
-                SELECT id,name,profession
-                FROM people
-                WHERE lower(name)=lower(?)
-                LIMIT 1
-                """,
-                (str(name).strip(),),
-            ).fetchone()
-
-            if exact:
-                resolved_people.append(dict(exact))
-
-        # Person filmography.
-        if intent == "person_movies" and len(resolved_people) >= 1:
-            p = resolved_people[0]
-            rows = person_movies(p, c, yr)
-
+        if result:
             c.close()
-
-            period = f" ({yr[0]}–{yr[1]})" if yr else ""
-
-            if rows:
-                return {
-                    "intent": "person_filmography",
-                    "text": (
-                        f"<strong>🎭 {p['name']}{period}</strong><br>"
-                        + "<br>".join(
-                            f"• {r['title']} ({r['year']})"
-                            for r in rows
-                        )
-                    ),
-                }
-
-            return {
-                "intent": "person_filmography",
-                "text": (
-                    f"<strong>🎭 {p['name']}{period}</strong><br>"
-                    "No filmography found in the current database."
-                ),
-            }
-
-        # Collaboration.
-        if intent == "collaboration" and len(resolved_people) >= 2:
-            a, b = resolved_people[0], resolved_people[1]
-            rows = collaboration(a, b, c, yr)
-
-            c.close()
-
-            names = f"{a['name']} + {b['name']}"
-            period = f" ({yr[0]}–{yr[1]})" if yr else ""
-
-            if rows:
-                return {
-                    "intent": "collaboration",
-                    "text": (
-                        f"<strong>🎬 {names}{period}</strong><br>"
-                        + "<br>".join(
-                            f"• {r['title']} ({r['year']})"
-                            for r in rows
-                        )
-                    ),
-                }
-
-            return {
-                "intent": "collaboration",
-                "text": (
-                    f"<strong>🎬 {names}{period}</strong><br>"
-                    "No matching movie found in BB's current database."
-                ),
-            }
+            return result
 
     c.close()
 
-    # Gemini unavailable/uncertain → original BB logic.
-    return query_rule_based(original_query)
+    return {
+        "intent": "fallback",
+        "text": (
+            "Namaste! 🎬 I couldn't find a matching result "
+            "in BB's current database."
+        ),
+    }
